@@ -1,6 +1,11 @@
 import chess
 import random
 import time
+import math
+
+# TODO:
+
+
 
 """ PRINCIPLES (from protocol docs http://wbec-ridderkerk.nl/html/UCIProtocol.html )
 
@@ -27,36 +32,7 @@ class Engine:
         self.author = 'Momo People'
         self.debug = False
         self.maxEval = 10000
-
-    def eval(self):
-        evaluation = 0
-        pieces = self.board.piece_map()
-        for p in pieces.values():
-            if p.color == chess.BLACK:
-                sign = -1
-            else:
-                sign = 1
-            if p.piece_type == chess.PAWN:
-                value = 1
-            elif p.piece_type == chess.KNIGHT or p.piece_type == chess.BISHOP:
-                value = 3
-            elif p.piece_type == chess.ROOK:
-                value = 5
-            elif p.piece_type == chess.QUEEN:
-                value = 9
-            elif p.piece_type == chess.KING:
-                value = 200
-            evaluation = evaluation + sign*value
-        # Control for checkmates
-        if self.board.is_checkmate():
-            if len(self.board.attackers(chess.WHITE, self.board.king(chess.BLACK))) > 0:
-                evaluation = self.maxEval
-            else:
-                evaluation = -self.maxEval
-            
-        if self.color == chess.BLACK:
-            return -evaluation
-        return evaluation
+        self.root = None
 
 
     def inputUCI(self):
@@ -107,50 +83,109 @@ class Engine:
 
     def inputPosition(self, line):
         # The command contains the position the GUI wants to communicate to the engine,
-        # in FEN string notation https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation
-        
+        # in FEN string notation https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation  
         cmd = line[9:]  # Eliminate 'position '
         if cmd.startswith('startpos'):
             self.board = chess.Board()
-        else:
-            # TODO: read FEN and set up board
-            print('info string Starting from non-standard starting position is not supported yet')
+        elif cmd.startswith('fen'):
+            idx = cmd.find('moves')
+            self.board = chess.Board(cmd[4:idx-2])
         
         idx = cmd.find('moves')
         if idx >= 0:
             cmd = cmd[idx+6:] # strip 'moves ' from command
             moves = cmd.split(' ')
-            if len(moves)%2 == 0:
-                self.color = chess.WHITE
-            else:
-                self.color = chess.BLACK
             for move in moves:
                 self.board.push(chess.Move.from_uci(move))
 
 
-    def inputGo(self, line):
+    def inputGo(self, command):
         # start calculating on the current position set up with the "position" command. Ideally, do it in another thread,
         # so text can be read while processing and search can be stopped
         # Many options can follow (see docs)
         # TODO: Do it in another thread
-        # TODO: Implement real calculation
-        legalMoves = list(self.board.generate_legal_moves())
-        bestEval = -999999999
-        
-        for move in legalMoves:
+        plyDepth = 6
+        score, self.bestMove = self.negaMaxAlphaBeta(plyDepth)
+        print(f'info depth {plyDepth} pv {self.bestMove.uci()} score cp {score*100}')
+        print(f'bestmove {self.bestMove}')
+        self.board.push(self.bestMove)
+    
+
+    def negaMaxAlphaBeta(self, depth):
+        return self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth)
+
+    def negaMaxAlphaBetaProper(self, alpha, beta, depth):
+        bestMove = chess.Move.null()
+        if depth == 0 or self.board.is_game_over():
+            return [self.evalBoard(), bestMove]
+        for move in self.board.legal_moves:
             self.board.push(move)
-            eval = self.eval()
+            [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1)
+            score = -score
             self.board.pop()
-            if eval > bestEval:
-                bestMoves = []
-                bestEval = eval
-                bestMoves.append(move)
-            elif eval == bestEval:
-                bestMoves.append(move)
-        bestMove = random.choice(bestMoves)
-        time.sleep(0.3)
-        print(f'bestmove {bestMove}')
-        self.board.push(bestMove)
+            if score >= beta:
+                return [beta, move]
+            if score > alpha:
+                bestMove = move
+                alpha = score
+        return [alpha, bestMove]
+
+
+
+    def negaMax(self, depth):
+        u = -math.inf
+        for move in self.board.legal_moves:
+            self.board.push(move)
+            temp = -self.negaMaxProper(depth-1)
+            if temp > u:
+                self.bestMove = move
+                u = temp
+            self.board.pop()
+    
+    def negaMaxProper(self, depth):
+        if depth == 0:
+            return self.evalBoard()
+        max = -math.inf
+        for move in self.board.legal_moves:
+            self.board.push(move)
+            score = -self.negaMaxProper(depth-1)
+            if score > max:
+                max = score
+            self.board.pop()
+        return max
+
+
+
+    def evalBoard(self): # Evaluate own board, relative to the evaluating color (Positive is good for evaluating color)
+        # Calculate value function
+        if self.board.can_claim_draw():
+            return 0
+        evaluation = 0
+        pieces = self.board.piece_map()
+        for p in pieces.values():
+            if p.color == chess.BLACK:
+                sign = -1
+            else:
+                sign = 1
+            if p.piece_type == chess.PAWN:
+                value = 1
+            elif p.piece_type == chess.KNIGHT or p.piece_type == chess.BISHOP:
+                value = 3
+            elif p.piece_type == chess.ROOK:
+                value = 5
+            elif p.piece_type == chess.QUEEN:
+                value = 9
+            elif p.piece_type == chess.KING:
+                value = 200
+            evaluation = evaluation + sign*value
+        if self.board.is_checkmate():
+            if len(self.board.attackers(chess.WHITE, self.board.king(chess.BLACK))) > 0:
+                evaluation = evaluation+self.maxEval
+            else:
+                evaluation = evaluation-self.maxEval
+        if self.board.turn == chess.BLACK:
+            return -evaluation
+        return evaluation
 
 
     # Starts the UCI protocol loop to communicate with a chess GUI
