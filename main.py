@@ -2,10 +2,10 @@ import chess
 import random
 import time
 import math
+import positionTables
 
-# TODO:
 
-
+# TODO: Move search into separate thread
 
 """ PRINCIPLES (from protocol docs http://wbec-ridderkerk.nl/html/UCIProtocol.html )
 
@@ -29,10 +29,20 @@ class Engine:
     
     def __init__(self):
         self.engineName = 'PunchingBall'
-        self.author = 'Momo People'
+        self.author = 'Michele'
         self.debug = False
         self.maxEval = 10000
         self.root = None
+        self.materialScores ={
+            chess.PAWN : 100,
+            chess.KNIGHT : 320,
+            chess.BISHOP : 325,
+            chess.ROOK : 500,
+            chess.QUEEN : 975,
+            chess.KING : 32767
+            }
+        self.positionTables = positionTables.tables
+
 
 
     def inputUCI(self):
@@ -104,9 +114,9 @@ class Engine:
         # so text can be read while processing and search can be stopped
         # Many options can follow (see docs)
         # TODO: Do it in another thread
-        plyDepth = 6
+        plyDepth = 4
         score, self.bestMove = self.negaMaxAlphaBeta(plyDepth)
-        print(f'info depth {plyDepth} pv {self.bestMove.uci()} score cp {score*100}')
+        print(f'info depth {plyDepth} pv {self.bestMove.uci()} score cp {score}')
         print(f'bestmove {self.bestMove}')
         self.board.push(self.bestMove)
     
@@ -155,29 +165,29 @@ class Engine:
         return max
 
 
-
-    def evalBoard(self): # Evaluate own board, relative to the evaluating color (Positive is good for evaluating color)
-        # Calculate value function
+    # Evaluate own board, relative to the player to move (Positive is good for evaluating color)
+    def evalBoard(self):
+        # "State" component
         if self.board.can_claim_draw():
             return 0
+        
         evaluation = 0
-        pieces = self.board.piece_map()
-        for p in pieces.values():
-            if p.color == chess.BLACK:
-                sign = -1
+        for square in chess.SQUARES:
+            p = self.board.piece_at(square)
+            if not p:
+                continue
+            # Material Evaluation
+            if p.color == chess.WHITE:
+                evaluation += self.materialScores[p.piece_type]
             else:
-                sign = 1
-            if p.piece_type == chess.PAWN:
-                value = 1
-            elif p.piece_type == chess.KNIGHT or p.piece_type == chess.BISHOP:
-                value = 3
-            elif p.piece_type == chess.ROOK:
-                value = 5
-            elif p.piece_type == chess.QUEEN:
-                value = 9
-            elif p.piece_type == chess.KING:
-                value = 200
-            evaluation = evaluation + sign*value
+                evaluation -= self.materialScores[p.piece_type]
+            # Position Evaluation
+            if p.piece_type != chess.ROOK and p.piece_type != chess.QUEEN:
+                if p.color == chess.WHITE:
+                    evaluation += self.positionTables[p.piece_type][square]
+                else:
+                    evaluation -= self.positionTables[p.piece_type][square]
+
         if self.board.is_checkmate():
             if len(self.board.attackers(chess.WHITE, self.board.king(chess.BLACK))) > 0:
                 evaluation = evaluation+self.maxEval

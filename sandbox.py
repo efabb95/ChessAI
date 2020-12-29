@@ -1,6 +1,7 @@
 import chess
 import chess.engine
 import boardTree
+import positionTables
 
-
-board = chess.Board()
+tables = positionTables.tables
+print(tables)
