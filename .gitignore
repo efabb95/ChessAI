@@ -533,6 +533,8 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
+## VisualStudioCode ###
+**/.vscode/
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
