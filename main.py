@@ -1,8 +1,12 @@
 import chess
+import chess.polyglot
 import random
 import time
 import math
 import positionTables
+from pathlib import Path
+from random import randrange
+
 
 
 # TODO: Move search into separate thread
@@ -42,6 +46,8 @@ class Engine:
             chess.KING : 32767
             }
         self.positionTables = positionTables.tables
+        self.useOpeningBook = True
+        self.bookReader = chess.polyglot.open_reader(Path(__file__).parent / "books/performance.bin")
 
 
 
@@ -89,6 +95,7 @@ class Engine:
         # after "ucinewgame" to wait for the engine to finish its operation.
         self.board = chess.Board() # board represents the present state of the game
         self.color = chess.WHITE
+        self.useOpeningBook = True
 
 
     def inputPosition(self, line):
@@ -122,48 +129,42 @@ class Engine:
     
 
     def negaMaxAlphaBeta(self, depth):
-        return self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth)
+        if self.useOpeningBook:
+            self.useOpeningBook=False
+            for entry in self.bookReader.find_all(self.board):
+                self.useOpeningBook = True
+                break
+        return self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth, self.useOpeningBook)
 
-    def negaMaxAlphaBetaProper(self, alpha, beta, depth):
+    def negaMaxAlphaBetaProper(self, alpha, beta, depth, useOpening):
         bestMove = chess.Move.null()
         if depth == 0 or self.board.is_game_over():
             return [self.evalBoard(), bestMove]
-        for move in self.board.legal_moves:
-            self.board.push(move)
-            [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1)
-            score = -score
-            self.board.pop()
-            if score >= beta:
-                return [beta, move]
-            if score > alpha:
-                bestMove = move
-                alpha = score
+        if useOpening:
+            openingMoves = list()
+            sumWeight = 0
+            for entry in self.bookReader.find_all(self.board):
+                openingMoves.append((sumWeight,entry.move))
+                sumWeight += entry.weight
+            chosenMove = randrange(0, sumWeight)
+            i = 1
+            openingMovesLen = len(openingMoves)
+            while i < openingMovesLen:
+                if chosenMove <= openingMoves[i][0]:
+                    return [chosenMove, openingMoves[i-1][1]]
+            return [chosenMove, openingMoves[openingMovesLen-1][1]]
+        if not useOpening:
+            for move in self.board.legal_moves:
+                self.board.push(move)
+                [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1, useOpening)
+                score = -score
+                self.board.pop()
+                if score >= beta:
+                    return [beta, move]
+                if score > alpha:
+                    bestMove = move
+                    alpha = score
         return [alpha, bestMove]
-
-
-
-    def negaMax(self, depth):
-        u = -math.inf
-        for move in self.board.legal_moves:
-            self.board.push(move)
-            temp = -self.negaMaxProper(depth-1)
-            if temp > u:
-                self.bestMove = move
-                u = temp
-            self.board.pop()
-    
-    def negaMaxProper(self, depth):
-        if depth == 0:
-            return self.evalBoard()
-        max = -math.inf
-        for move in self.board.legal_moves:
-            self.board.push(move)
-            score = -self.negaMaxProper(depth-1)
-            if score > max:
-                max = score
-            self.board.pop()
-        return max
-
 
     # Evaluate own board, relative to the player to move (Positive is good for evaluating color)
     def evalBoard(self):
@@ -187,7 +188,6 @@ class Engine:
                     evaluation += self.positionTables[p.piece_type][square]
                 else:
                     evaluation -= self.positionTables[p.piece_type][square]
-
         if self.board.is_checkmate():
             if len(self.board.attackers(chess.WHITE, self.board.king(chess.BLACK))) > 0:
                 evaluation = evaluation+self.maxEval
