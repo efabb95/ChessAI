@@ -123,20 +123,25 @@ class Engine:
         # TODO: Do it in another thread
         plyDepth = 4
         score, self.bestMove = self.negaMaxAlphaBeta(plyDepth)
-        print(f'info depth {plyDepth} pv {self.bestMove.uci()} score cp {score}')
         print(f'bestmove {self.bestMove}')
         self.board.push(self.bestMove)
     
 
     def negaMaxAlphaBeta(self, depth):
+        pLine = []
         if self.useOpeningBook:
             self.useOpeningBook=False
             for entry in self.bookReader.find_all(self.board):
                 self.useOpeningBook = True
                 break
-        return self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth, self.useOpeningBook)
+        score, bestMove = self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth, self.useOpeningBook, pLine)
+        pLineMoves = ''
+        for m in pLine:
+            pLineMoves += ' ' + m.uci()
+        print(f'info score cp {score} depth {depth} pv {pLineMoves}')
+        return score, bestMove
 
-    def negaMaxAlphaBetaProper(self, alpha, beta, depth, useOpening):
+    def negaMaxAlphaBetaProper(self, alpha, beta, depth, useOpening, pLine):
         bestMove = chess.Move.null()
         if depth == 0 or self.board.is_game_over():
             return [self.evalBoard(), bestMove]
@@ -154,14 +159,16 @@ class Engine:
                     return [chosenMove, openingMoves[i-1][1]]
             return [chosenMove, openingMoves[openingMovesLen-1][1]]
         if not useOpening:
+            thisLine = []
             for move in self.board.legal_moves:
                 self.board.push(move)
-                [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1, useOpening)
+                [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1, useOpening, thisLine)
                 score = -score
                 self.board.pop()
                 if score >= beta:
                     return [beta, move]
                 if score > alpha:
+                    pLine[:] = [move] + thisLine
                     bestMove = move
                     alpha = score
         return [alpha, bestMove]
