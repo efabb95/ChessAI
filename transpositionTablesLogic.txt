@@ -1,0 +1,12 @@
+While searching the tree:
+
+check for presence in the table by hashing
+if not present...?
+if present, check hashentry.depth. if hashentry.depth >= plies left to search
+    then use attached values.
+    look at flag (HASH_EXACT, HASH_BETA, HASH_ALPHA), respectively:
+    - the evaluated move was the best one ( Applied if eval is beta < eval < alpha)
+    - the evaluated move was discarded because it was 'too good', the search was cut off. Pos evaluation was at least beta, maybe higher
+    - The evaluated move had score lower than alpha
+    return alpha = hashentry.score, move = hashentry.move
+else just pick the saved next move and start looking from there
