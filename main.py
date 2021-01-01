@@ -14,7 +14,7 @@ from random import randrange
 
 # TODO: Move search into separate thread
 # TODO: Add quiescence search at the last ply of negamax, to correct point evaluation
-# TODO: Study code efficiency, especially evaluation and negamax search
+# TODO: Study code efficiency, find out where most time is spent -> Most of eval time is spent checking if it's a draw!
 # TODO: Return PV
 # TODO: move ordering to speed search
 
@@ -61,6 +61,7 @@ class Engine:
         self.boardHash = None
         self.errors = 0
         self.tableHits = 0
+        self.evalTime = 0
 
 
 
@@ -141,10 +142,6 @@ class Engine:
         print(f'bestmove {self.bestMove}')
         self.updateHash(self.bestMove)
         self.board.push(self.bestMove)
-        print(f'wrong hash errors: {self.errors}')
-        self.errors = 0
-        print(f'table hits: {self.tableHits}')
-        self.tableHits = 0
     
 
     def negaMaxAlphaBeta(self, depth):
@@ -162,6 +159,8 @@ class Engine:
         if self.board.turn == chess.BLACK:
             score = -score
         print(f'info score cp {score} depth {depth}')
+        print(f'info string evalTime: {self.evalTime}/{end-start} ({self.evalTime/(end-start)}%)')
+        self.evalTime = 0
         return score, bestMove
 
     def negaMaxAlphaBetaProper(self, alpha, beta, depth, useOpening, initialDepth):
@@ -182,21 +181,19 @@ class Engine:
         # If NOT using opening book
         else:
             key = self.boardHash
-            if key != self.boardHash:
-                self.errors += 1
-                if self.errors < 10:
-                    print(self.board)
-                    print('\n')
             idx = key % self.hashSize
             # If position is not in the hash table, if there is a hash collision or the board is present but with depth = 0, regular eval + add to hash table
             if self.tt[idx] and self.tt[idx].zobrist == key and self.tt[idx].depth >= depth: # TODO: Handle collisions properly
-                # print(f'info string table hit at depth {depth}')
-                self.tableHits += 1
                 return [self.tt[idx].score, self.tt[idx].bestMove]
             else:
                 bestMove = chess.Move.null()
                 if depth == 0 or self.board.is_game_over():
+                    #
+                    start = time.perf_counter()
                     score = self.evalBoard()
+                    end = time.perf_counter()
+                    self.evalTime += end-start
+                    #
                     self.tt[idx] = tt.Hashentry(key, depth, tt.HASH_EXACT, score, False, bestMove)
                     return [score, bestMove]
                 for move in self.board.legal_moves:
@@ -223,24 +220,22 @@ class Engine:
     # Evaluate own board, relative to the player to move (Positive is good for evaluating color)
     def evalBoard(self):
         # "State" component
-        if self.board.can_claim_draw():
-            return 0
+        # if self.board.can_claim_draw():
+        #     return 0
         evaluation = 0
-        for square in chess.SQUARES:
-            p = self.board.piece_at(square)
-            if not p:
-                continue
+        pieces = self.board.piece_map()
+        for pSquare in pieces:
             # Material Evaluation
-            if p.color == chess.WHITE:
-                evaluation += self.materialScores[p.piece_type]
+            if pieces[pSquare].color == chess.WHITE:
+                evaluation += self.materialScores[pieces[pSquare].piece_type]
             else:
-                evaluation -= self.materialScores[p.piece_type]
+                evaluation -= self.materialScores[pieces[pSquare].piece_type]
             # Position Evaluation
-            if p.piece_type != chess.ROOK and p.piece_type != chess.QUEEN:
-                if p.color == chess.WHITE:
-                    evaluation += self.positionTables[p.piece_type][square]
+            if pieces[pSquare].piece_type != chess.ROOK and pieces[pSquare].piece_type != chess.QUEEN:
+                if pieces[pSquare].color == chess.WHITE:
+                    evaluation += self.positionTables[pieces[pSquare].piece_type][pSquare]
                 else:
-                    evaluation -= self.positionTables[p.piece_type][square]
+                    evaluation -= self.positionTables[pieces[pSquare].piece_type][pSquare]
         if self.board.is_checkmate():
             if len(self.board.attackers(chess.WHITE, self.board.king(chess.BLACK))) > 0:
                 evaluation = evaluation+self.maxEval
