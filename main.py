@@ -13,10 +13,10 @@ from random import randrange
 
 
 # TODO: Move search into separate thread
+# TODO: study code efficiency
 # TODO: Add quiescence search at the last ply of negamax, to correct point evaluation
-# TODO: Study code efficiency, find out where most time is spent -> Most of eval time is spent checking if it's a draw!
-# TODO: Return PV
-# TODO: move ordering to speed search
+# TODO: Add minor heuristics to order non-capture moves
+# TODO: Find out what is a useful hash size
 
 """ PRINCIPLES (from protocol docs http://wbec-ridderkerk.nl/html/UCIProtocol.html )
 
@@ -56,12 +56,12 @@ class Engine:
         self.useOpeningBook = True
         self.bookReader = chess.polyglot.open_reader(Path(__file__).parent / "books/performance.bin")
         self.pLine = []
-        self.hashSize = 1000000
+        self.hashSize = 100000000
         self.tt = [None]*self.hashSize
         self.boardHash = None
         self.errors = 0
         self.tableHits = 0
-        self.evalTime = 0
+        self.victimScores = [0, 100, 200, 300, 400, 500, 600]
 
 
 
@@ -137,33 +137,30 @@ class Engine:
         # so text can be read while processing and search can be stopped
         # Many options can follow (see docs)
         # TODO: Do it in another thread
-        plyDepth = 4
-        score, self.bestMove = self.negaMaxAlphaBeta(plyDepth)
+        plyDepth = 5
+        score, self.bestMove = self.searchPosition(plyDepth)
         print(f'bestmove {self.bestMove}')
-        self.updateHash(self.bestMove)
-        self.board.push(self.bestMove)
+        self.pushMove(self.bestMove)
     
-
-    def negaMaxAlphaBeta(self, depth):
+    def searchPosition(self, depth):
         if self.useOpeningBook:
             self.useOpeningBook=False
             for entry in self.bookReader.find_all(self.board):
                 self.useOpeningBook = True
                 break
-        self.pLine = list()
-        start = time.perf_counter()
-        score, bestMove = self.negaMaxAlphaBetaProper(-math.inf, math.inf, depth, self.useOpeningBook, depth)
-        end = time.perf_counter()
-        # Send the GUI some info
-        print(f'info time {int((end-start)*1000)}')
-        if self.board.turn == chess.BLACK:
-            score = -score
-        print(f'info score cp {score} depth {depth}')
-        print(f'info string evalTime: {self.evalTime}/{end-start} ({self.evalTime/(end-start)}%)')
-        self.evalTime = 0
+        for d in range(depth):
+            start = time.perf_counter()
+            searchInfo = {"Nodes":0}
+            score, bestMove = self.negaMaxAlphaBeta(-math.inf, math.inf, d+1, self.useOpeningBook, searchInfo)
+            end = time.perf_counter()
+            # Send the GUI some info
+            if self.board.turn == chess.BLACK:
+                score = -score
+            print(f'info score cp {score} depth {d+1} time {int((end-start)*1000)} pv {self.getCurrentPVString()} nodes {searchInfo["Nodes"]}, nps {int(searchInfo["Nodes"]/(end-start))}')
         return score, bestMove
+        
 
-    def negaMaxAlphaBetaProper(self, alpha, beta, depth, useOpening, initialDepth):
+    def negaMaxAlphaBeta(self, alpha, beta, depth, useOpening, searchInfo):
         # If using opening book
         if useOpening:
             openingMoves = list()
@@ -180,39 +177,94 @@ class Engine:
             return [chosenMove, openingMoves[openingMovesLen-1][1]]
         # If NOT using opening book
         else:
-            key = self.boardHash
-            idx = key % self.hashSize
-            # If position is not in the hash table, if there is a hash collision or the board is present but with depth = 0, regular eval + add to hash table
-            if self.tt[idx] and self.tt[idx].zobrist == key and self.tt[idx].depth >= depth: # TODO: Handle collisions properly
-                return [self.tt[idx].score, self.tt[idx].bestMove]
-            else:
-                bestMove = chess.Move.null()
-                if depth == 0 or self.board.is_game_over():
-                    #
-                    start = time.perf_counter()
+            bestScore = -math.inf
+            bestMove = chess.Move.null()
+            if depth == 0 or self.board.is_game_over():
                     score = self.evalBoard()
-                    end = time.perf_counter()
-                    self.evalTime += end-start
-                    #
-                    self.tt[idx] = tt.Hashentry(key, depth, tt.HASH_EXACT, score, False, bestMove)
+                    searchInfo["Nodes"] += 1
                     return [score, bestMove]
-                for move in self.board.legal_moves:
-                    self.updateHash(move)
-                    self.board.push(move)
-                    [score, tempMove] = self.negaMaxAlphaBetaProper(-beta, -alpha, depth-1, useOpening, initialDepth)
-                    score = -score
-                    self.board.pop()
-                    self.updateHash(move)
-                    if score >= beta:
-                        self.tt[idx] = tt.Hashentry(key, depth, tt.HASH_BETA, beta, False, move)
-                        return [beta, move]
+            searchInfo["Nodes"] += 1
+            # Check for draw by repetition here
+            oldAlpha = alpha
+            legalMoves = list(self.board.legal_moves)
+            scores = self.scoreMoves(legalMoves)
+            for m in range(len(legalMoves)):
+                move = self.pickMove(legalMoves, scores, m)
+                self.pushMove(move)
+                [score, tempMove] = self.negaMaxAlphaBeta(-beta, -alpha, depth-1, useOpening, searchInfo)
+                score = -score
+                self.popMove(move)
+                if score > bestScore:
+                    bestScore = score
+                    bestMove = move
                     if score > alpha:
-                        bestMove = move
+                        if score >= beta:
+                            self.tt[self.boardHash%self.hashSize] = tt.Hashentry(self.boardHash, depth, tt.HASH_BETA, score, False, move)
+                            return [beta, move]
                         alpha = score
-                    
-                self.tt[idx] = tt.Hashentry(key, depth, tt.HASH_EXACT, alpha, False, bestMove)
-                return [alpha, bestMove]
-            
+                        bestMove = move
+            if alpha != oldAlpha:
+                self.tt[self.boardHash%self.hashSize] = tt.Hashentry(self.boardHash, depth, tt.HASH_EXACT, alpha, False, bestMove)
+            else:
+                self.tt[self.boardHash%self.hashSize] = tt.Hashentry(self.boardHash, depth, tt.HASH_ALPHA, alpha, False, bestMove)
+            return [alpha, bestMove]
+    
+    def scoreMoves(self, moves):
+        scores = []
+        for move in moves:
+            pvLine = self.getCurrentPVLine()
+            if pvLine and move == pvLine[0]:
+                score = 200000
+            elif self.board.is_en_passant(move):
+                score = self.victimScores[chess.PAWN] + 6 - (self.victimScores[chess.PAWN]/100)
+            elif self.board.is_capture(move):
+                score = self.victimScores[self.board.piece_at(move.to_square).piece_type] + 6 - (self.victimScores[self.board.piece_at(move.from_square).piece_type]/100)
+            else:
+                score = 0                
+            scores.append(score)
+        return scores
+
+    def pickMove(self, moves, scores, i):
+        bestScore = -math.inf
+        bestMove = moves[i]
+        bestIdx = 0
+        for m in range(i, len(moves)):
+            if scores[m] > bestScore:
+                bestScore = scores[m]
+                bestIdx = m
+                bestMove = moves[m]
+        moves[i], moves[bestIdx] = moves[bestIdx], moves[i]
+        scores[i], scores[bestIdx] = scores[bestIdx], scores[i]
+        return bestMove
+
+    def getCurrentPVString(self):
+        # Returns a string describing the PV Line frome the current state of self.board
+        pvLine = self.getCurrentPVLine()
+        pvMoves = ''
+        if pvLine:
+            for m in pvLine:
+                pvMoves += ' ' + m.uci()
+        return pvMoves
+
+    
+    def getCurrentPVLine(self):
+        # Returns a list describing the PV Line frome the current state of self.board
+        pvLine = []
+        revLine = []
+        while self.tt[self.boardHash%self.hashSize] and self.tt[self.boardHash%self.hashSize].bestMove != chess.Move.null():
+            if self.tt[self.boardHash%self.hashSize].zobrist != self.boardHash:
+                print("info string WARNING hash index collision, PVLine lost")
+                break
+            move = self.tt[self.boardHash%self.hashSize].bestMove
+            pvLine.append(move)
+            revLine.append(move)
+            self.pushMove(move)
+        if revLine:
+            revLine.reverse()
+            for move in revLine:
+                self.popMove(move)
+        return pvLine
+         
 
     def orderMoves(self, depth, initialDepth):
         pass
@@ -244,6 +296,17 @@ class Engine:
         if self.board.turn == chess.BLACK:
             return -evaluation
         return evaluation
+
+    def pushMove(self, move: chess.Move):
+        # pushes move on the self.board AND updates self.boardHash
+        self.updateHash(move)
+        self.board.push(move)
+
+    def popMove(self, move: chess.Move):
+        # pops move from self.board AND updates self.boardHash
+        self.board.pop()
+        self.updateHash(move)
+        
 
     # Updated the hash zobristKey of the board self.board to reflect the move, without re-hashing the whole board
     def updateHash(self, move: chess.Move):
